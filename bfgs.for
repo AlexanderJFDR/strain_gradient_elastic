@@ -62,6 +62,7 @@
         real(rkind) :: C(3, 3), D(6, 6)        
         real(rkind) :: gp(2*ngp), gw(ngp)
         real(rkind) :: QQ(18,18) 
+        real(rkind) :: u_share(100000,12),coord_share(100000,2,6)
         !
         contains
 
@@ -99,7 +100,7 @@
             D(:,6) = (/    0.D0,    0.D0,   0.D0,    0.D0,   0.D0, l**2*G0/)
             
             ! integration points
-            gp = (/  1.d0/6.d0, 1.d0/6.d0, 2.d0/3.d0, 1.d0/6.d0, 2.d0/3.d0, 1.d0/6.d0 /)
+            gp = (/  1.d0/6.d0, 2.d0/3.d0, 1.d0/6.d0, 1.d0/6.d0, 1.d0/6.d0, 2.d0/3.d0 /)
             gw = (/  1.d0, 1.d0, 1.d0 /) / 6.d0
             
             ! dof interchange
@@ -294,52 +295,33 @@
         use FEM
         implicit none
 
-        real(rkind):: rhs(18), amatrix(18,18), coords(2,6)
-        real(rkind):: svars(4), u(18)
+        real(rkind):: rhs(12), amatrix(12,12), coords(2,6)
+        real(rkind):: svars(9), u(12)
        
         ! local varibles
         real(rkind):: nu(2,6), bu(3,12), du(6,12)
         real(rkind):: uu(12), ru(12), kuu(12,12)
-        real(rkind):: rr(18), kk(18,18)
         real(rkind):: det_jacb, dvol
         integer(ikind):: i, j, k
         
         ! initialize varibles
-        do i = 1, 6
-          uu(2*i - 1) = u(3*i - 2)
-          uu(2*i    ) = u(3*i - 1)
-        end do
+        uu = u
 
         kuu = 0.d0
         do i = 1, ngp
-          do j = 1, ngp      
+          do j = 1, ngp
+
             call b_matrix(nu,bu,du,det_jacb,coords,gp(i),gp(ngp+i))
             dvol= gw(i)*det_jacb*thk
             kuu = kuu + dvol*(matmul(matmul(transpose(bu),C),bu)+matmul(matmul(transpose(du),D),du))
+
           end do
         end do   
 
-        write (*, *) 'kuu = ', kuu
-
         ru = -matmul(kuu,uu) ! applies to hybrid formulation
-        rr = 0.d0
-        kk = 0.d0
-
-        rr(1:12 ) = ru
-        rr(13:15) = 0.d0
           
-        kk = 0.d0
-        kk(1:12 , 1:12 ) = kuu
-        kk(13:15, 13:15) = 0.d0
-
-        do i=16,18
-          rr(i) = 0.d0
-          kk(i,i) = 1.d0 
-        end do
-          
-        rhs     = matmul(transpose(QQ),rr)
-        amatrix = matmul(matmul(transpose(QQ),kk),QQ)
-  
+        rhs     = ru
+        amatrix = kuu 
         return 
       end subroutine pfczm
      
@@ -383,14 +365,53 @@
       ! user coding to define rhs, amatrx, svars, energy and pnewdt (optional for the last two)
       !
         
-        write (*, *) 'TIME = ', time(2)
+      !  write (*, *) 'TIME = ', time(2)
 
         ! initialize parameters, etc.                     
         if (.not. bInitialized) call Initialize(props, nprops, jtype)
         
         ! right now only Q4 element is implemented
         call pfczm(rhs(:,1),amatrx,coords,u,svars)
-        
+        u_share(jelem,:) = u
+        coord_share(jelem,:,:) = coords
+
         return
 
       end subroutine uel
+
+!**********************************************************************************************************
+
+      SUBROUTINE UVARM(UVAR,DIRECT,T,TIME,DTIME,CMNAME,ORNAME,
+     1                 NUVARM,NOEL,NPT,NLAYER,NSPT,KSTEP,KINC,
+     2                 NDI,NSHR,COORD,JMAC,JMATYP,MATLAYO, LACCFLA)
+        
+        use NumKind
+        use ModelParam
+        use FEM
+        
+        INCLUDE 'ABA_PARAM.INC'
+C
+        CHARACTER*80 CMNAME,ORNAME
+        DIMENSION UVAR(NUVARM),TIME(2),DIRECT(3,3),T(3,3),COORD(*),
+     &      JMAC(*),JMATYP(*) 
+C     USER DEFINED DIMENSION STATEMENTS
+        CHARACTER*3 FLGRAY(15)
+        DIMENSION ARRAY(12),JARRAY(15)
+        real(rkind):: nu(2,6), bu(3,12), du(6,12), coords(2,6)
+        real(rkind):: det_jacb,node_num,npt_num
+        real(rkind):: u(12), E(3), sigma(3), gradE(6), eta(6)
+
+        node_num = NOEL-1000000
+        u = u_share(node_num,:)
+        coords = coord_share(node_num,:,:)
+        call b_matrix(nu,bu,du,det_jacb,coords,gp(NPT),gp(NPT+ngp))
+        
+        E = matmul(bu,u)
+        sigma = matmul(C,E)
+        gradE = matmul(du,u)
+        eta = matmul(D,gradE)
+        UVAR(1) = (dot_product(E,sigma)+dot_product(gradE,eta))/2.d0
+      !  UVAR(1) = (dot_product(E,sigma))/2.d0
+
+        return 
+      end subroutine UVARM
