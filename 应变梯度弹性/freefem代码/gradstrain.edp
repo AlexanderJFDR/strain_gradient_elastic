@@ -1,0 +1,91 @@
+include "meshmodel.edp"
+load "Morley"
+//材料参数 量纲MPa、N、mm
+real E = 210000, nu = 0.3, SMALL=1e-8, l=0.0;
+real lamda=nu*E/(1+nu)/(1-2*nu), G=E/2/(1+nu);
+//交替求解参数
+real loadinit=2e-3;
+//宏观模型参数
+real width = 1, length = 1, crackw = 0.5, crackl = 0.01, Slope = crackl/(2*crackw), m = 200, n = 100;
+
+//定义刚度矩阵
+macro Q(E,nu)  [ [E/(1-nu^2),nu*E/(1-nu^2),0],
+                [nu*E/(1-nu^2), E/(1-nu^2),0],
+                [0,0,0.5*E/(1+nu)] ]//
+
+//定义应变
+macro epsilon(u,v) [dx(u),dy(v),dy(u)+dx(v)]//
+//定义应变梯度
+macro gradepsilonX(u,v) [dxx(u),dxy(v),dxy(u)+dxx(v)]//
+macro gradepsilonY(u,v) [dxy(u),dyy(v),dyy(u)+dxy(v)]//
+//主应变
+macro epsilon1(u,v) ((dx(u)+dy(v))/2+sqrt(((dx(u)-dy(v))/2)^2+((dx(v)+dy(u))/2)^2))//
+macro epsilon2(u,v) ((dx(u)+dy(v))/2-sqrt(((dx(u)-dy(v))/2)^2+((dx(v)+dy(u))/2)^2))//
+
+//定义取正函数
+func real isplus(real a)
+{
+    real num = 0;
+    if(a>0)
+    {
+        num = a;
+    }
+    return num;
+}
+
+//定义能量分解
+//无分解
+macro energy(u,v) (0.5*epsilon(u,v)'*Q(E,nu)*epsilon(u,v)
+                    +0.5*l^2*gradepsilonX(u,v)'*Q(E,nu)*gradepsilonX(u,v)+0.5*l^2*gradepsilonY(u,v)'*Q(E,nu)*gradepsilonY(u,v)) //
+//球量偏量分解
+macro VDplus(u,v) (0.5*(lamda+2*G/3)*isplus((dx(u)+dy(v)))^2+G*((dx(u)-dy(v))^2/2+(dy(u)+dx(v))^2/2)) //
+//谱分解
+macro Mieheplus(u,v) (0.5*lamda*(isplus(epsilon1(u,v)+epsilon2(u,v)))^2+G*((isplus(epsilon1(u,v)))^2+(isplus(epsilon2(u,v)))^2)) // 
+
+//建立宏观有限元模型
+border a1(t=0, width){x=t; y=0; label=1;}
+border a2(t=0, length/2){x=width; y=t; label=2;}
+border a3(t=0, width-crackw){x=width-t; y=length/2; label=0;}
+border a0(t=0, crackw){x=crackw-t; y=(length)/2-Slope*t; label=10;}
+border a4(t=0, (length-crackl)/2){x=0; y=(length-crackl)/2-t; label=4;}
+mesh Th1 = buildmesh(a1(m/10) + a2(n/2) + a3(10*m*(width-crackw)/width) + a0(10*crackw/width*m) + a4((length-crackl)/length/2*n));
+int[int] L =[1, 3];
+mesh Th2 = movemesh(Th1, [x, length-y]); //生成对称网格
+Th2 = change(Th2, label = L);
+mesh Th = Th2 + Th1;
+Th = adaptmesh(Th,atan2(sqrt((x-crackw)^2+(y-length/2)^2), 0.5), hmax=0.2, hmin=0.001, nbvx = 200000);
+Th = splitmesh(Th,4);
+plot(Th,wait=true);
+
+real displacement = loadinit;
+fespace Vh(Th,[P2,P2]), Eh(Th,P1); //损伤d用P1元就行，用P2元就不行？
+Vh [u,v],[u1,v1];
+Eh Energy, dyyv , xx=x, yy=y; 
+
+solve MacroElastic([u,v],[u1,v1]) = int2d(Th)(epsilon(u,v)'*Q(E,nu)*epsilon(u1,v1))
+    +int2d(Th)(l^2*gradepsilonX(u,v)'*Q(E,nu)*gradepsilonX(u1,v1))
+    +int2d(Th)(l^2*gradepsilonY(u,v)'*Q(E,nu)*gradepsilonY(u1,v1))
+    +on(1,u=0,v=0)+on(3,v=displacement);
+Energy = energy(u,v);
+plot(Energy,fill=1,value=1,wait=1,cmm="dis"+" displacement"+displacement,boundary=0);
+dyyv = dy(v);
+plot(dyyv,fill=1,value=1,wait=1);
+
+ofstream Fy("output/data.txt");
+Fy<<"TITLE = "<<"energy_density"<<endl;
+int nodeNum = Eh.ndof;
+int elementNum = Eh.nt;
+Fy<<"ZONE N="<<nodeNum<<", E="<<elementNum<<", F=FEPOINT, ET=Triangle"<<endl;
+for(int i=0; i<nodeNum; i++)
+{
+    Fy<<xx[](i)<<" "<<yy[](i)<<" "<<Energy[](i)<<endl; 
+}
+for(int i=0; i<elementNum; i++)
+{
+    for(int j=0; j<Eh.ndofK; j++)
+    {
+        Fy<<Eh(i,j)+1<<" ";
+    }
+    Fy<<endl;
+}
+
